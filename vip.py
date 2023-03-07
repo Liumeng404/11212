@@ -1,33 +1,61 @@
 import time
-
+from typing import Union, Tuple
 from playwright.sync_api import Playwright, sync_playwright
-import csv
 import re
 import math
+import lxml.etree as etree
+import pandas as pd
+from pprint import  pprint
+import datetime
+
+def scrape_data(source):
+    # 使用lxml解析源代码
+    tree = etree.HTML(source)
+    # 使用xpath提取表格数据
+    table = tree.xpath('//table/tbody/tr')
+
+    data = [[td.text.strip() if td.text is not None and td.text.strip() != '' else '空缺' for td in tr.xpath('./td')] for tr in table]
+
+    #存储数据
+    # data = []
+    # for tr in table:
+    #     td = tr.xpath('./td')
+    #     td_value = []
+    #     for single_value in td:
+    #         if single_value.text is not None:
+    #             if single_value.text.strip() == '':
+    #                 td_value.append('空缺')
+    #             else:
+    #                 td_value.append(single_value.text.strip())
+    #         else:
+    #             td_value.append('空缺')
+    #     data.append((td_value))
+    return data
 
 
+def get_date_range(date: str = None, month: bool = False) -> Union[str, Tuple[str, str]]:
+    """
+    Get date range based on input parameters.
 
-def scrape_data(page):
-    # 等待表格加载完成
-    page.wait_for_selector('table.table')
-    # 获取表格中所有的行
-    rows = page.query_selector_all('table tbody tr')
-    rows_list = [rows[i:i+10] for i in range(0, len(rows), 10)]
-    return rows_list
+    :param date: str, default None. If specified, return the previous day's date in "YYYY-MM-DD" format.
+    :param month: bool, default False. If True, return the date range for the previous month from the current date.
+    :return: str or tuple. If `date` is specified, return the previous day's date in "YYYY-MM-DD" format. If `month` is
+             True, return a tuple of the start date and end date for the previous month in "YYYY-MM-DD" format.
+    """
+    if date:
+        # calculate previous day's date
+        prev_day = (datetime.strptime(date, '%Y-%m-%d') - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+        return prev_day
+    elif month:
+        # calculate previous month's date range
+        today = datetime.date.today()
+        last_month_end = today.replace(day=1) - datetime.timedelta(days=1)
+        last_month_start = last_month_end.replace(day=1)
+        return last_month_start.strftime('%Y-%m-%d'), last_month_end.strftime('%Y-%m-%d')
+    else:
+        raise ValueError("Either 'date' or 'month' must be specified.")
 
 
-def save_to_csv(rows_list):
-    with open('data3.csv', 'w', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerow(
-            ['ID', '账户', '申请时间', '试用产品', '来源', '负责人', '状态', '变更时间', '来源URL', '页面标题', '操作'])
-        # 循环遍历所有行，并将每个单元格写入csv文件
-        for every_rows in rows_list:
-            for row in every_rows:
-                for each in row:
-                    cols = each.query_selector_all('td')
-                    data = [col.text_content() for col in cols]
-                    writer.writerow(data)
 
 def run(playwright: Playwright):
     # 初始化 Playwright 并启动一个新的 Chromium 浏览器实例
@@ -41,16 +69,6 @@ def run(playwright: Playwright):
     page.wait_for_selector("input[name='username']")
     page.fill("input[name='username']", 'liumeng')
     page.fill("input[name='password']", 'liumeng123')
-
-    # 获取滑块
-    # handle_box_locate = page.locator('.handler')
-    #
-    # #获取登录按钮
-    # login_box_locate = page.locator('button.btn')
-    #
-    # print(handle_box_locate.bounding_box())
-    #
-    # print(login_box_locate.bounding_box())
 
     # 定位鼠标
     page.mouse.move(490, 416)
@@ -70,10 +88,15 @@ def run(playwright: Playwright):
     page.mouse.click(500, 465)
 
     # 等待1秒
-    time.sleep(2)
+
+    #获取月
+    starttime, endtime = get_date_range(month=True)
 
     # 跳转到里面
-    page.goto('https://adminvip.yaozh.com/user/viptrial.html?starttime=2023-03-01&endtime=2023-03-01')
+    page.goto(f'https://adminvip.yaozh.com/user/viptrial.html?starttime={starttime}&endtime={endtime}',timeout=5000)
+
+
+    page.wait_for_load_state()
 
     page.wait_for_selector('table')
 
@@ -86,15 +109,27 @@ def run(playwright: Playwright):
     rows_list = []
 
     #翻页转圈所有
-    for each_page in range(1,pages):
-        page.goto(f'https://adminvip.yaozh.com/user/viptrial.html?starttime=2023-03-01&endtime=2023-03-01&page={each_page}')
-        rows_list.append(scrape_data(page))
-        time.sleep(1)
+    for each_page in range(1, pages+1):
+        page.goto(f'https://adminvip.yaozh.com/user/viptrial.html?starttime={starttime}&endtime={endtime}&page={each_page}')
 
-    save_to_csv(rows_list)
+        page.wait_for_load_state()
+        page.wait_for_selector('table')
+      #  print(page.content())
+        content = page.content()
+        rows_list.extend(scrape_data(content))
+
+        time.sleep(2)
+    pprint(rows_list)
+
+    pd_csv = pd.DataFrame(data=rows_list,columns=['序号','ID','账户','时间','试用产品','来源','负责人','状态','变更时间','来源URL','页面标题','操作'])
+
+    pd_csv.to_sql()
+
+    print('done')
+    #save_to_csv(rows_list)
 
 
-
+    time.sleep(5)
 
     # 关闭浏览器
     browser.close()
